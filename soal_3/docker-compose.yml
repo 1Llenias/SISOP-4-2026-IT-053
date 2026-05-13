@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  libraryit-server:
+    build: .
+    container_name: libraryit-server
+    privileged: true
+    ports:
+      - "1445:445"
+    volumes:
+      - ./data:/libraryit
+      - ./data/docs:/libraryit/docs:ro
+      - ./logs:/var/log/samba
+    restart: always
+
+  libraryit-logger:
+    image: busybox
+    container_name: libraryit-logger
+    volumes:
+      - ./logs:/var/log/samba
+    # Script untuk memformat log mentah Samba menjadi format permintaan soal
+    command: >
+      sh -c "touch /var/log/samba/libraryit.log && 
+             tail -f /var/log/samba/libraryit.log | awk '{ 
+               level=\"INFO\"; 
+               if (\$0 ~ /failed/) level=\"WARNING\";
+               print \"[\" strftime(\"%Y-%m-%d %H:%M:%S\") \"] [\" level \"] [\" \$1 \"] [\" \$2 \"] [\" \$3 \"]\" 
+             }'"
+    depends_on:
+      - libraryit-server
