@@ -455,3 +455,476 @@ Kendala yang dialami:
 - Penanganan file virtual agar ukuran file tetap konsisten saat diakses menggunakan `stat`.
 
 Seluruh kendala berhasil diselesaikan sehingga filesystem dapat berjalan dengan baik.
+
+## Soal 2 - Poke MOO
+
+---
+
+### Deskripsi Soal
+
+Pada soal ini, praktikan diminta untuk membuat sebuah filesystem virtual menggunakan FUSE (Filesystem in Userspace) yang berfungsi sebagai translator antara direktori mount dan direktori penyimpanan terenkripsi.
+
+Filesystem ini memiliki mekanisme:
+- Semua file yang disimpan pada direktori asli (`encrypted_storage`) akan disimpan dalam keadaan terenkripsi XOR dengan key `0x76`
+- Semua file yang diakses melalui mount point (`fuse_mount`) akan otomatis didekripsi
+- Nama file pada direktori asli memiliki tambahan ekstensi `.enc`
+- Operasi filesystem dilakukan menggunakan FUSE operations
+
+Selain itu, sistem juga diintegrasikan dengan Docker untuk menjalankan mini database service menggunakan bind mount ke filesystem FUSE.
+
+---
+
+### Struktur Direktori
+
+```text
+soal_2/
+├── client.c
+├── server
+├── fuse.c
+├── Dockerfile
+├── encrypted_storage/
+└── fuse_mount/
+```
+
+---
+
+### Pengerjaan FUSE
+
+#### Konsep Dasar
+
+Filesystem ini bekerja sebagai translator:
+
+```text
+User
+ ↓
+fuse_mount
+ ↓
+FUSE
+ ↓
+encrypted_storage
+```
+
+Ketika user mengakses file dari `fuse_mount`, isi file akan otomatis didekripsi menggunakan XOR.
+
+Sebaliknya, ketika user menulis file melalui `fuse_mount`, file akan dienkripsi sebelum disimpan pada `encrypted_storage`.
+
+---
+
+### Implementasi XOR Encryption
+
+praktikan menggunakan XOR dengan key `0x76`.
+
+```c
+static const unsigned char XOR_KEY = 0x76;
+```
+
+Fungsi XOR:
+
+```c
+void xor_buffer(char *buf, size_t size)
+{
+    for (size_t i = 0; i < size; i++)
+    {
+        buf[i] ^= XOR_KEY;
+    }
+}
+```
+
+Karena XOR bersifat reversible, fungsi yang sama dapat digunakan untuk:
+- encrypt
+- decrypt
+
+---
+
+### Path Translation
+
+Filesystem memiliki dua bentuk path:
+
+| Mount Point | Real Storage |
+|---|---|
+| `/halo.txt` | `encrypted_storage/halo.txt.enc` |
+
+Untuk itu dibuat fungsi translator path:
+
+```c
+void get_real_path(char fpath[PATH_MAX],
+                   const char *path,
+                   int encrypted)
+{
+    sprintf(fpath, "%s%s", storage_path, path);
+
+    if (encrypted && strcmp(path, "/") != 0)
+    {
+        strcat(fpath, ".enc");
+    }
+}
+```
+
+Parameter:
+- `encrypted = 1` → tambahkan `.enc`
+- `encrypted = 0` → direktori biasa
+
+---
+
+### Implementasi FUSE Operations
+
+Filesystem mengimplementasikan operasi berikut:
+
+| Operation | Fungsi |
+|---|---|
+| getattr | Mengambil atribut file |
+| readdir | Membaca isi direktori |
+| mkdir | Membuat direktori |
+| rmdir | Menghapus direktori |
+| create | Membuat file |
+| open | Membuka file |
+| read | Membaca file |
+| write | Menulis file |
+| truncate | Mengubah ukuran file |
+| unlink | Menghapus file |
+| access | Mengecek akses |
+| utimens | Mengubah timestamp |
+
+---
+
+### getattr
+
+Operation ini digunakan untuk membaca atribut file/direktori.
+
+```c
+static int xmp_getattr(const char *path,
+                       struct stat *stbuf,
+                       struct fuse_file_info *fi)
+{
+    (void) fi;
+
+    int res;
+    char fpath[PATH_MAX];
+
+    get_real_path(fpath, path, 0);
+    res = lstat(fpath, stbuf);
+
+    if (res == -1) {
+        get_real_path(fpath, path, 1);
+        res = lstat(fpath, stbuf);
+    }
+
+    if (res == -1)
+        return -errno;
+
+    return 0;
+}
+```
+
+Sistem akan:
+1. mencoba membaca sebagai direktori biasa
+2. jika gagal, mencoba membaca sebagai file `.enc`
+
+Metode ini memperbaiki bug mount root (`/`) yang sebelumnya menyebabkan FUSE gagal melakukan mount.
+
+---
+
+### readdir
+
+Digunakan untuk membaca isi direktori.
+
+```c
+static int xmp_readdir(...)
+```
+
+Pada operasi ini:
+- isi direktori asli dibaca dari `encrypted_storage`
+- ekstensi `.enc` disembunyikan dari user
+
+Contoh:
+
+```text
+encrypted_storage/test.txt.enc
+```
+
+akan terlihat sebagai:
+
+```text
+fuse_mount/test.txt
+```
+
+---
+
+### read
+
+Digunakan untuk membaca file.
+
+```c
+static int xmp_read(...)
+```
+
+Langkah:
+1. membaca file `.enc`
+2. melakukan XOR decrypt
+3. mengirim hasil ke user
+
+```c
+xor_buffer(buf, res);
+```
+
+---
+
+### write
+
+Digunakan untuk menulis file.
+
+```c
+static int xmp_write(...)
+```
+
+Langkah:
+1. menerima data dari user
+2. melakukan XOR encrypt
+3. menyimpan ke file `.enc`
+
+```c
+xor_buffer(enc_buf, size);
+```
+
+---
+
+### Automatic Directory Creation
+
+Filesystem akan otomatis membuat:
+- `encrypted_storage`
+- `fuse_mount`
+
+jika belum tersedia.
+
+```c
+if (stat("encrypted_storage", &st) == -1)
+{
+    mkdir("encrypted_storage", 0755);
+}
+```
+
+---
+
+### Penggunaan FUSE
+
+#### Compile
+
+```bash
+gcc fuse.c `pkg-config fuse3 --cflags --libs` -o fuse
+```
+
+#### Mount Filesystem
+
+```bash
+./fuse -o allow_other fuse_mount
+```
+
+Opsi `allow_other` digunakan agar Docker container dapat mengakses filesystem FUSE.
+
+---
+
+### Pengujian FUSE
+
+#### Membuat File
+
+```bash
+echo "halo" > fuse_mount/test.txt
+```
+
+#### Hasil pada Storage
+
+```text
+encrypted_storage/test.txt.enc
+```
+
+Isi file terenkripsi dan tidak dapat dibaca langsung.
+
+#### Membaca File
+
+```bash
+cat fuse_mount/test.txt
+```
+
+Output:
+
+```text
+halo
+```
+
+---
+
+### Pengujian File Checker
+
+praktikan membuat direktori:
+
+```bash
+mkdir -p encrypted_storage/tests
+```
+
+Kemudian menaruh file:
+
+```text
+notes.csv.enc
+```
+
+pada:
+
+```text
+encrypted_storage/tests/
+```
+
+Filesystem berhasil melakukan decrypt otomatis ketika file diakses melalui:
+
+```text
+fuse_mount/tests/notes.csv
+```
+
+---
+
+### Docker Containerization
+
+#### Dockerfile
+
+```dockerfile
+FROM ubuntu:latest
+
+WORKDIR /app
+
+COPY server .
+COPY client .
+
+RUN chmod +x server
+RUN chmod +x client
+
+EXPOSE 9000
+
+CMD ["./server"]
+```
+
+Penjelasan:
+- menggunakan base image `ubuntu:latest`
+- seluruh program diletakkan pada `/app`
+- port `9000` diexpose
+- server dijalankan otomatis saat container aktif
+
+---
+
+### Build Docker Image
+
+```bash
+docker build -t soal-2-modul-4-sisop .
+```
+
+---
+
+### Menjalankan Container
+
+```bash
+docker run -d \
+    --name db_app \
+    -p 9000:9000 \
+    --mount type=bind,source=$(realpath fuse_mount),target=/app/db \
+    soal-2-modul-4-sisop
+```
+
+---
+
+### Integrasi Docker dan FUSE
+
+Container menggunakan bind mount:
+
+```text
+Host:
+fuse_mount
+↓
+Container:
+/app/db
+```
+
+Sehingga seluruh perubahan database pada container otomatis diteruskan ke filesystem FUSE.
+
+Alur lengkap:
+
+```text
+client
+ ↓
+server (docker)
+ ↓
+/app/db
+ ↓
+fuse_mount
+ ↓
+FUSE encryption/decryption
+ ↓
+encrypted_storage
+```
+
+---
+
+### Hasil Integrasi
+
+Ketika client menjalankan:
+
+```sql
+CREATE DATABASE tes;
+```
+
+maka:
+- folder database muncul pada `/app/db`
+- otomatis muncul pada `fuse_mount`
+- otomatis tersimpan pada `encrypted_storage`
+
+Semua file tabel tersimpan dalam bentuk terenkripsi `.enc`.
+
+---
+
+### Kendala
+
+- Mount FUSE Rusak karena root `/` diperlakukan sebagai file `.enc`
+- `getattr()` gagal membaca root filesystem
+- Docker gagal mount (karena tidak menggunakan `allow_other`
+
+## Soal 3 - LibraryIT
+
+---
+
+### Deskripsi Soal
+
+Pada soal ini, praktikan diminta untuk membangun infrastruktur LibraryIT dari 0 dengan menggunakan Docker dan Samba.
+
+LibraryIT ini memiliki mekanisme:
+- Server yang berjalan di dalam kontainer Docker bernama libraryit-server
+- Ketika server dijalankan otomatis membuat 4 ruang penyimpanan (`ebooks`, `papers`, `sourcecode`, `docs`) yang berada dalam direktori `/libraryit/`
+- Server mengenali 3 user yaitu `member` dengan password `member123`, `contributor` dengan password `contrib456`, dan `librarian` dengan password `lib789`
+- Server membagi 3 user menjadi 2 kelompok: readonly (`member`) dan staff (`contributor`, `librarian`)
+- Setiap koleksi memiliki aturan akses yang berbeda: `ebooks` dan `paper` dapat dibaca oleh 3 user, namun hanya dapat ditulis oleh `staff`, `sourcecode` tidak boleh diakses sama sekali oleh `member`, `docs` bisa dibaca oleh 3 user, namun hanya dapat ditulis oleh `librarian`
+- Seluruh konfigurasi harus berbasis kelompok dan tidak boleh ada akses tanpa identitas
+- Seluruh koleksi tersimpan permanen di luar container
+- Host hanya dapat mengakses `sourcecode` dengan permission 750
+- Host bersifat read-only untuk koleksi `docs`
+- Semua aktivitas dicatat pada log
+
+Semua mekanisme harus langsung berjalan otomatis tepat pada saat server berjalan
+
+---
+
+### Struktur Direktori
+
+```bash
+soal_3/
+├── Dockerfile
+├── docker-compose.yml
+├── smb.conf
+├── entrypoint.sh
+├── data/
+│   ├── ebooks/
+│   ├── papers/
+│   ├── sourcecode/
+│   └── docs/
+└── logs/
+    └── libraryit.log
+```
+
+---
+
+// Soal belum terselesaikan
