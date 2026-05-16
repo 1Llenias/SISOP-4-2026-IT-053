@@ -397,6 +397,8 @@ Program dikompilasi menggunakan:
 gcc kenz_rescue.c -o kenz_rescue `pkg-config fuse3 --cflags --libs`
 ```
 
+![](assets/1_1.png)
+
 ---
 
 ### Menjalankan Program
@@ -406,6 +408,8 @@ Mount filesystem:
 ```bash
 ./kenz_rescue amba_files mnt
 ```
+
+![](assets/1_2.png)
 
 ---
 
@@ -417,17 +421,23 @@ Melihat isi mount directory:
 ls mnt
 ```
 
+![](assets/1_3.png)
+
 Membaca file virtual:
 
 ```bash
 cat mnt/tujuan.txt
 ```
 
+![](assets/1_4.png)
+
 Melihat metadata file virtual:
 
 ```bash
 stat mnt/tujuan.txt
 ```
+
+![](assets/1_5.png)
 
 ---
 
@@ -444,6 +454,8 @@ atau:
 ```bash
 fusermount -u mnt
 ```
+
+![](assets/1_6.png)
 
 ---
 
@@ -713,11 +725,17 @@ if (stat("encrypted_storage", &st) == -1)
 gcc fuse.c `pkg-config fuse3 --cflags --libs` -o fuse
 ```
 
+![](assets/2_1.png)
+
+---
+
 #### Mount Filesystem
 
 ```bash
 ./fuse -o allow_other fuse_mount
 ```
+
+![](assets/2_2.png)
 
 Opsi `allow_other` digunakan agar Docker container dapat mengakses filesystem FUSE.
 
@@ -733,6 +751,8 @@ echo "halo" > fuse_mount/test.txt
 
 #### Hasil pada Storage
 
+![](assets/2_3.png)
+
 ```text
 encrypted_storage/test.txt.enc
 ```
@@ -744,6 +764,8 @@ Isi file terenkripsi dan tidak dapat dibaca langsung.
 ```bash
 cat fuse_mount/test.txt
 ```
+
+![](assets/2_4.png)
 
 Output:
 
@@ -778,6 +800,8 @@ Filesystem berhasil melakukan decrypt otomatis ketika file diakses melalui:
 ```text
 fuse_mount/tests/notes.csv
 ```
+
+![](assets/2_5.png)
 
 ---
 
@@ -815,6 +839,8 @@ Penjelasan:
 docker build -t soal-2-modul-4-sisop .
 ```
 
+![](assets/2_6.png)
+
 ---
 
 ### Menjalankan Container
@@ -826,6 +852,8 @@ docker run -d \
     --mount type=bind,source=$(realpath fuse_mount),target=/app/db \
     soal-2-modul-4-sisop
 ```
+
+![](assets/2_7.png)
 
 ---
 
@@ -875,6 +903,8 @@ maka:
 - otomatis tersimpan pada `encrypted_storage`
 
 Semua file tabel tersimpan dalam bentuk terenkripsi `.enc`.
+
+![](assets/2_8.png)
 
 ---
 
